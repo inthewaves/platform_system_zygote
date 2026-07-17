@@ -18,13 +18,17 @@
 //! open during execution.
 
 use core::{assert_eq, ops::Deref};
-use std::{fs::File, os::fd::AsRawFd};
+use std::{
+    collections::BTreeSet,
+    fs::File,
+    os::fd::{AsRawFd, RawFd},
+};
 
 use rustix::fd::IntoRawFd;
 
 use zygote_sys::{
     self as sys,
-    procfs::{assert_fd_closed, assert_single_threaded},
+    procfs::{assert_fd_closed, assert_single_threaded, ProcFdIterator},
 };
 
 use zygote::{
@@ -35,6 +39,10 @@ use zygote::{
 
 // Command-line arguments to ignore, because they are not supported by libtest-mimic.
 const IGNORED_ARGS: [&str; 2] = ["-Zunstable-options", "--report-time"];
+
+fn open_fds() -> BTreeSet<RawFd> {
+    ProcFdIterator::new().unwrap().map(|fd| fd.unwrap()).collect()
+}
 
 fn test_file_descriptor_registry() -> Result<(), std::io::Error> {
     assert_single_threaded();
@@ -97,7 +105,14 @@ fn test_file_descriptor_registry() -> Result<(), std::io::Error> {
          * Test action handling
          */
 
+        // In this setup, all actions preserve their FD slots except the two Close actions.
+        let mut expected_fds = open_fds();
+        assert!(expected_fds.remove(&pipe0));
+        assert!(expected_fds.remove(&pipe1));
+
         registry.execute_actions(ForkType::Application).unwrap();
+
+        assert_eq!(expected_fds, open_fds());
 
         // Test that the FIFO descriptors have been closed
         assert_fd_closed(pipe0);

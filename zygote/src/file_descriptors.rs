@@ -27,7 +27,7 @@ use std::{
     cmp::Ordering,
     convert::TryFrom,
     ffi::{CStr, CString, FromBytesWithNulError},
-    os::fd::RawFd,
+    os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
 };
 
 use arrayvec::{ArrayString, ArrayVec};
@@ -902,11 +902,17 @@ impl FileDescriptorRegistry {
     pub fn execute_actions(&mut self, fork_type: ForkType) -> FdRegistryResult<()> {
         debug_assert_single_threaded();
 
-        let dev_null_fd = sys::open(DEV_NULL_PATH_C, libc::O_RDWR | libc::O_CLOEXEC, None)
-            .map_err(FdRegistryError::DevNullFailure)?;
+        {
+            let dev_null_fd =
+                sys::open(DEV_NULL_PATH_C, libc::O_RDWR | libc::O_CLOEXEC, None)
+                    .map_err(FdRegistryError::DevNullFailure)?;
+            // SAFETY: sys::open returned a new, owned file descriptor. This is
+            // the only conversion that takes ownership of it.
+            let dev_null_fd = unsafe { OwnedFd::from_raw_fd(dev_null_fd) };
 
-        for entry in &mut self.data {
-            entry.execute(dev_null_fd, fork_type)?;
+            for entry in &mut self.data {
+                entry.execute(dev_null_fd.as_raw_fd(), fork_type)?;
+            }
         }
 
         self.species.sync_fd_state();
