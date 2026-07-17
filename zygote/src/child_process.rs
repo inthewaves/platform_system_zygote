@@ -28,7 +28,6 @@ use crate::{
     arguments::ARG,
     species::{ReInitWrapper, SpeciesRef},
 };
-#[cfg(target_os = "android")]
 use crate::server;
 use zygote_messages::{SpawnParamsCommon, SpawnPayload};
 use zygote_sys as sys;
@@ -96,8 +95,14 @@ pub(crate) fn re_initialize(
         }
     }
 
-    // Add the process to any secondary groups if requested
-    if !spawn_params.secondary_groups.is_empty() {
+    // Exec-spawned processes inherit the primary Zygote's groups, so an empty list must clear them
+    // during identity specialization. The persistent native Zygote starts without supplementary
+    // groups. Its app zygote descendants inherit their parent's groups and a seccomp filter that
+    // blocks setgroups.
+    if !spawn_params.secondary_groups.is_empty()
+        || (server::is_exec_spawning()
+            && (spawn_params.uid.is_some() || spawn_params.gid.is_some()))
+    {
         sys::setgroups(spawn_params.secondary_groups.as_slice()).expect("Failed to set groups");
     }
 
