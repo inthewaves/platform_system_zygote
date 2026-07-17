@@ -31,34 +31,50 @@ use zygote_sys as sys;
 #[allow(unreachable_code)]
 fn main() -> Result<()> {
     let config = zygote::config::Server::parse();
-    if let Some(cmd_fd_arg) = &config.command_fd {
+    if config.command_fd.is_some() {
         server::set_exec_spawning();
         log::info!("Beginning of exec spawning sequence");
 
-        let _trace_guard =
-            zygote_core::init_reporting(config.name.as_bytes(), config.log_level, config.trace_level);
-        config.species.on_start();
-
-        let mut msg_bytes = zygote_messages::MESSAGE_BUFFER_INIT;
-        {
-            let separator_idx = cmd_fd_arg.find('_').expect("cmd_fd_arg separator is missing");
-            let cmd_fd = cmd_fd_arg[..separator_idx].parse::<i32>()?;
-            // SAFETY: cmd_fd is passed by a trusted caller
-            let mut cmd_file = unsafe { std::fs::File::from_raw_fd(cmd_fd) };
-            let cmd_fd_len = cmd_fd_arg[separator_idx + 1..].parse::<usize>()?;
-            cmd_file.read_exact(&mut msg_bytes[0..cmd_fd_len])?;
-        }
-        let mut server = server::Server::new(&config).map_err(|error| {
-            log::error!("Error constructing server: {error}");
-            error
-        })?;
-
-        server.handle_message_exec_spawn(msg_bytes)?();
+        let thunk = run_exec_spawn(config)?;
+        thunk();
     } else if let Some(thunk) = run_server(config)? {
         thunk();
     }
 
     Ok(())
+}
+
+/// Process an exec spawning command.
+///
+/// The server is constructed in, and the application thunk returned from, this
+/// frame to ensure that the server resources are dropped before the thunk is
+/// evaluated.
+fn run_exec_spawn(config: zygote::config::Server) -> Result<impl FnOnce() -> Infallible> {
+    let _trace_guard =
+        zygote_core::init_reporting(config.name.as_bytes(), config.log_level, config.trace_level);
+    config.species.on_start();
+
+    let msg_bytes = {
+        let cmd_fd_arg = config
+            .command_fd
+            .as_ref()
+            .expect("exec spawning requires command_fd");
+        let separator_idx = cmd_fd_arg.find('_').expect("cmd_fd_arg separator is missing");
+        let cmd_fd = cmd_fd_arg[..separator_idx].parse::<i32>()?;
+        // SAFETY: cmd_fd is passed by a trusted caller
+        let mut cmd_file = unsafe { std::fs::File::from_raw_fd(cmd_fd) };
+        let cmd_fd_len = cmd_fd_arg[separator_idx + 1..].parse::<usize>()?;
+        let mut msg_bytes = zygote_messages::MESSAGE_BUFFER_INIT;
+        cmd_file.read_exact(&mut msg_bytes[0..cmd_fd_len])?;
+        msg_bytes
+    };
+
+    let mut server = server::Server::new(&config).map_err(|error| {
+        log::error!("Error constructing server: {error}");
+        error
+    })?;
+
+    Ok(server.handle_message_exec_spawn(msg_bytes)?)
 }
 
 /// Parse configuration values, instantiate the server, and run it.

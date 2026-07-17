@@ -1220,7 +1220,10 @@ impl Server {
 
 impl Drop for Server {
     fn drop(&mut self) {
-        if self.pid == sys::getpid() {
+        // An exec-spawned application does not fork after constructing the
+        // Server, so its PID still matches self.pid. It nevertheless requires
+        // the same cleanup as a forked application process.
+        if self.pid == sys::getpid() && !is_exec_spawning() {
             self.species.on_server_destroy();
 
             // Clean up the server code in the server process
